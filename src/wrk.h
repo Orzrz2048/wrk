@@ -33,6 +33,9 @@ typedef struct {
     uint64_t requests;
     uint64_t bytes;
     uint64_t start;
+    uint64_t vni;
+    uint64_t pp_dport;
+    char *pp_dip;
     lua_State *L;
     errors errors;
     struct connection *cs;
