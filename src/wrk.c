@@ -10,11 +10,14 @@ static struct config {
     uint64_t threads;
     uint64_t timeout;
     uint64_t pipeline;
+    uint64_t pp_dport;
+    uint64_t vni;
     bool     delay;
     bool     dynamic;
     bool     latency;
     char    *host;
     char    *script;
+    char    *pp_dip;
     SSL_CTX *ctx;
 } cfg;
 
@@ -105,6 +108,9 @@ int main(int argc, char **argv) {
         thread *t      = &threads[i];
         t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
         t->connections = cfg.connections / cfg.threads;
+        t->pp_dport    = cfg.pp_dport;
+        t->vni         = cfg.vni;
+        t->pp_dip      = cfg.pp_dip;
 
         t->L = script_create(cfg.script, url, headers);
         script_init(L, t, argc - optind, &argv[optind]);
@@ -236,7 +242,8 @@ void *thread_main(void *arg) {
 static int connect_socket(thread *thread, connection *c) {
     struct addrinfo *addr = thread->addr;
     struct aeEventLoop *loop = thread->loop;
-    int fd, flags;
+    int fd, flags, len;
+    char proxy_header[128];
 
     fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
 
@@ -249,6 +256,12 @@ static int connect_socket(thread *thread, connection *c) {
 
     flags = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags));
+
+    len = snprintf(proxy_header, sizeof proxy_header,
+                   "PROXY TCP4 255.255.255.255 %s 65535 %li %li\r\n",
+                   thread->pp_dip, thread->pp_dport, thread->vni);
+
+    if ((write(fd, proxy_header, len)) == -1) goto error;
 
     flags = AE_READABLE | AE_WRITABLE;
     if (aeCreateFileEvent(loop, fd, flags, socket_connected, c) == AE_OK) {
@@ -474,6 +487,9 @@ static struct option longopts[] = {
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
     { "timeout",     required_argument, NULL, 'T' },
+    { "pp_dip",      required_argument, NULL, 'i' },
+    { "pp_dport",    required_argument, NULL, 'p' },
+    { "vni",         required_argument, NULL, 'V' },
     { "help",        no_argument,       NULL, 'h' },
     { "version",     no_argument,       NULL, 'v' },
     { NULL,          0,                 NULL,  0  }
@@ -489,7 +505,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:i:p:V:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -512,6 +528,15 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
             case 'T':
                 if (scan_time(optarg, &cfg->timeout)) return -1;
                 cfg->timeout *= 1000;
+                break;
+            case 'i':
+                cfg->pp_dip = optarg;
+                break;
+            case 'p':
+                if (scan_metric(optarg, &cfg->pp_dport)) return -1;
+                break;
+            case 'V':
+                if (scan_metric(optarg, &cfg->vni)) return -1;
                 break;
             case 'v':
                 printf("wrk %s [%s] ", VERSION, aeGetApiName());
